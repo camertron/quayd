@@ -35,23 +35,30 @@ type Webhook struct {
 }
 
 type WebhookForm struct {
-	Repository  string   `json:"repository"`
-	TriggerKind string   `json:"trigger_kind"`
-	IsManual    bool     `json:"is_manual"`
-	DockerTags  []string `json:"docker_tags"`
-	BuildName   string   `json:"build_name"`
-	BuildURL    string   `json:"homepage"`
+	Repository  string           `json:"repository"`
+	TriggerKind string           `json:"trigger_kind"`
+	IsManual    bool             `json:"is_manual"`
+	DockerTags  []string         `json:"docker_tags"`
+	BuildURL    string           `json:"homepage"`
+	Metadata    *TriggerMetadata `json:"trigger_metadata"`
+}
+
+type TriggerMetadata struct {
+	Commit string `json:"commit"`
+	Ref    string `json:"ref"`
 }
 
 func (wh *Webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	status := vars["status"]
 	if !validStatus(status) {
-		http.Error(w, "Invalid status: "+status, 400)
+		http.Error(w, "Invalid status: " + status, 400)
 		return
 	}
 
-	var form WebhookForm
+	var form = &WebhookForm{
+		Metadata: &TriggerMetadata{},
+	}
 
 	if err := json.NewDecoder(r.Body).Decode(&form); err != nil {
 		errorResponse(w, err)
@@ -65,16 +72,16 @@ func (wh *Webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if status == "success" {
-		if err := wh.Quayd.LoadImageTags(form.DockerTags[0], form.Repository, form.BuildName); err != nil {
+		if err := wh.Quayd.LoadImageTags(form.DockerTags[0], form.Repository, form.Metadata.Commit); err != nil {
 			errorResponse(w, err)
 			return
 		}
 	}
-	if err := wh.Quayd.Handle(form.Repository, form.BuildName, form.BuildURL, status); err != nil {
+
+	if err := wh.Quayd.Handle(form.Repository, form.Metadata.Commit, form.BuildURL, status); err != nil {
 		errorResponse(w, err)
 		return
 	}
-
 }
 
 func validStatus(a string) bool {

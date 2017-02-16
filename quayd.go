@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"code.google.com/p/goauth2/oauth"
-	"github.com/ejholmes/go-github/github"
+	"golang.org/x/oauth2"
+	"github.com/google/go-github/github"
 )
 
 var (
@@ -17,9 +17,6 @@ var (
 
 	// DefaultStatusesRepository is the default StatusesRepository to use.
 	DefaultStatusesRepository = &statusesRepository{}
-
-	// DefaultCommitResolver is the default CommitResolver to use.
-	DefaultCommitResolver = &commitResolver{}
 
 	// DefaultTagger is the default Tagger to use.
 	DefaultTagger = &tagger{}
@@ -102,44 +99,6 @@ func (r *GitHubStatusesRepository) Create(status *Status) error {
 	return err
 }
 
-// CommitResolver is an interface for resolving a short sha to a full 40
-// character sha.
-type CommitResolver interface {
-	// Resolve resolves the short sha to a full 40 character sha.
-	Resolve(repo, short string) (string, error)
-}
-
-// commitResolver returns the short sha prefixed with the string "long".
-type commitResolver struct{}
-
-// Resolve implements CommitResolver Resolve.
-func (cr *commitResolver) Resolve(repo, short string) (string, error) {
-	return "long-" + short, nil
-}
-
-// GitHubCommitResolver is an implementation of CommitResolver backed by a
-// github.Client.
-type GitHubCommitResolver struct {
-	RepositoriesService interface {
-		GetCommit(owner, repo, sha string) (*github.RepositoryCommit, *github.Response, error)
-	}
-}
-
-// Resolve implements CommitResolver Resolve.
-func (cr *GitHubCommitResolver) Resolve(repo, short string) (string, error) {
-	// Split `owner/repo` into ["owner", "repo"].
-	c := strings.Split(repo, "/")
-	cm, _, err := cr.RepositoriesService.GetCommit(
-		c[0],
-		c[1],
-		short,
-	)
-	if err != nil {
-		return "", err
-	}
-	return *cm.SHA, nil
-}
-
 // Tagger is an interface for tagging a docker image with a tag.
 type Tagger interface {
 	// Tag tags the imageID with the given tag.
@@ -214,22 +173,19 @@ func (r *DockerRegistryTagResolver) Resolve(repo, tag string) (string, error) {
 // the docker image.
 type Quayd struct {
 	StatusesRepository
-	CommitResolver
 	Tagger
 	TagResolver
 }
 
 // New returns a new Quayd instance backed by GitHub implementations.
 func New(token, registryAuth string) *Quayd {
-	t := &oauth.Transport{
-		Token: &oauth.Token{AccessToken: token},
-	}
+	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+	tc := oauth2.NewClient(oauth2.NoContext, ts)
+	gh := github.NewClient(tc)
 
-	gh := github.NewClient(t.Client())
 	auth := strings.Split(registryAuth, ":")
 	return &Quayd{
 		StatusesRepository: &GitHubStatusesRepository{gh.Repositories},
-		CommitResolver:     &GitHubCommitResolver{gh.Repositories},
 		TagResolver:        &DockerRegistryTagResolver{registry: "quay.io"},
 		Tagger: &DockerRegistryTagger{registry: "quay.io",
 			username: auth[0],
@@ -239,16 +195,11 @@ func New(token, registryAuth string) *Quayd {
 
 // Handle resolves the ref to a full 40 character sha, then creates a new GitHub
 // Commit Status for that sha.
-func (q *Quayd) Handle(repo, ref, url, state string) error {
-	sha, err := q.commitResolver().Resolve(repo, ref)
-	if err != nil {
-		return err
-	}
-
+func (q *Quayd) Handle(repo, commit, url, state string) error {
 	return q.statusesRepository().Create(&Status{
 		Repo:        repo,
 		TargetURL:   url,
-		Ref:         sha,
+		Ref:         commit,
 		State:       state,
 		Description: Statuses[state],
 		Context:     Context,
@@ -259,30 +210,18 @@ func (q *Quayd) Handle(repo, ref, url, state string) error {
 // tags for the Image ID as well as the Git SHA since the docker
 // registry does not currently support puling a docker image by its
 // immutable identifier, only by a tag
-func (q *Quayd) LoadImageTags(tag, repo, ref string) error {
-	sha, err := q.commitResolver().Resolve(repo, ref)
-	if err != nil {
-		return err
-	}
+func (q *Quayd) LoadImageTags(tag, repo, commit string) error {
 	// Something that resolves the `tag` into an image id.
 	imageID, err := q.tagResolver().Resolve(repo, tag)
 	if err != nil {
 		return err
 	}
 
-	if err := q.tagger().Tag(repo, imageID, sha); err != nil {
+	if err := q.tagger().Tag(repo, imageID, commit); err != nil {
 		return err
 	}
+
 	return q.tagger().Tag(repo, imageID, imageID)
-
-}
-
-func (q *Quayd) commitResolver() CommitResolver {
-	if q.CommitResolver == nil {
-		return DefaultCommitResolver
-	}
-
-	return q.CommitResolver
 }
 
 func (q *Quayd) statusesRepository() StatusesRepository {

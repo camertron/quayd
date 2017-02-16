@@ -1,0 +1,12 @@
+package: github.com/remind101/quayd
+import:
+- package: github.com/codegangsta/negroni
+  version: ^0.2.0
+- package: github.com/ejholmes/go-github
+  subpackages:
+  - github
+- package: github.com/gorilla/mux
+  version: ^1.3.0
+- package: golang.org/x/oauth2
+  repo: https://github.com/golang/oauth2.git
+  version: b9780ec78894ab900c062d58ee3076cd9b2a4501
